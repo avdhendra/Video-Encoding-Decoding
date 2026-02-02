@@ -1,0 +1,155 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: appdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/db.init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d appdb"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # -------------------
+  # Zookeeper (required by Confluent Kafka)
+  # -------------------
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  # -------------------
+  # Kafka (Confluent)
+  # -------------------
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: "zookeeper:2181"
+
+      # listeners
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # -------------------
+  # Producer (gRPC + Kafka)
+  # -------------------
+  producer:
+    build:
+      context: .
+      dockerfile: ./producer/Dockerfile
+    container_name: producer
+    environment:
+      BROKER: "kafka:9092"
+      GROUPID: "producer-group-1"
+      TOPIC: "video.transcode.jobs"
+      GRPC_ADDR: "0.0.0.0:50051"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "50051:50051"
+
+  # -------------------
+  # Consumer
+  # -------------------
+  consumer:
+    build:
+      context: .
+      dockerfile: ./consumer/Dockerfile
+    container_name: consumer
+    environment:
+      BROKER: "kafka:9092"
+      GROUPID: "consumer-group-1"
+      TOPIC: "video.transcode.jobs"
+
+      DB_ADDR: "postgres://app:app@postgres:5432/appdb?sslmode=disable"
+      DB_MAX_OPEN_CONNS: "30"
+      DB_MAX_IDLE_CONNS: "30"
+      DB_MAX_IDLE_TIME: "15m"
+
+      AWS_ACCESS_KEY_ID: 
+      AWS_SECRET_ACCESS_KEY: 
+
+
+      S3_REGION: 
+      S3_BUCKET: 
+      S3_BASE_PATH: 
+      S3_PRESIGN_PUT_TTL: 15m
+      S3_PRESIGN_GET_TTL: 30m
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  # -------------------
+  # API Gateway
+  # -------------------
+  api:
+    build:
+      context: .
+      dockerfile: ./api/Dockerfile
+    container_name: api-gateway
+    environment:
+      ADDR: "0.0.0.0:8080"
+      EXTERNAL_URL: "localhost:8080"
+      FRONTEND_URL: "http://localhost:5173"
+      PRODUCER_GRPC_TARGET: "producer:50051"
+
+      DB_ADDR: "postgres://app:app@postgres:5432/appdb?sslmode=disable"
+      DB_MAX_OPEN_CONNS: "30"
+      DB_MAX_IDLE_CONNS: "30"
+      DB_MAX_IDLE_TIME: "15m"
+
+      ENV: "development"
+
+      AWS_ACCESS_KEY_ID: 
+      AWS_SECRET_ACCESS_KEY: 
+
+
+      S3_REGION: 
+      S3_BUCKET: 
+      S3_BASE_PATH: 
+      S3_PRESIGN_PUT_TTL: 
+      S3_PRESIGN_GET_TTL: 
+
+    depends_on:
+      producer:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+
+volumes:
+  pgdata:

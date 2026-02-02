@@ -1,0 +1,21 @@
+syntax= "proto3";
+
+package consumer;
+
+option go_package = "shared/proto/job;job";
+
+service JobProducerService {
+  rpc EnqueueTranscodeJob(EnqueueTranscodeJobRequest) returns (EnqueueTranscodeJobResponse);
+}
+
+message EnqueueTranscodeJobRequest {
+  string job_id = 1;
+  string video_id = 2;
+  string input_key = 3;
+  string pipeline = 4; // "hls"
+}
+
+message EnqueueTranscodeJobResponse {
+  bool accepted = 1;
+  string message = 2;
+}
